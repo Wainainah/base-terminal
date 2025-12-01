@@ -1,0 +1,19 @@
+{
+  "name": "base-terminal",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@blobkit/sdk": "^3.0.0",
+    "@coinbase/onchainkit": "^0.35.0",
+    "viem": "^2.21.0",
+    "wagmi": "^2.12.0"
+  }
+}
