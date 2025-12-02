@@ -1,59 +1,77 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import "./ITerminal.sol";
-import "./TerminalStorage.sol";
-import "./BlobKitEHoF.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./IBlobKitEHoF.sol";
 
-contract BaseTerminal is ITerminal, TerminalStorage, BlobKitEHoF {
-    constructor() {
-        // Initialize game state
-        gameActive = true;
-        timeRemaining = block.timestamp + DURATION;
-        emit TimerReset(timeRemaining);
+contract BaseTerminal is Ownable, ReentrancyGuard, IBlobKitEHoF {
+    // --- State Variables ---
+    uint256 public currentRoundStart;
+    uint256 public roundId;
+
+    // --- Configuration ---
+    uint256 public constant DURATION = 15 minutes;
+    uint256 public constant START_PRICE = 0.01 ether;
+    uint256 public constant RESERVE_PRICE = 0.0001 ether;
+
+    // --- Errors ---
+    error InsufficientPayment(uint256 required, uint256 provided);
+    error TransferFailed();
+
+    constructor() Ownable(msg.sender) {
+        // Start the first round immediately upon deployment
+        currentRoundStart = block.timestamp;
+        roundId = 1;
     }
 
-    function bid() external payable override {
-        if (!gameActive) revert GameNotActive();
-        if (block.timestamp >= timeRemaining) revert GameNotActive(); // Game technically ended, waiting for claim
-        if (msg.value < MIN_BID) revert InsufficientFee();
+    // --- View Functions ---
 
-        currentLeader = msg.sender;
-        potBalance += msg.value;
-        timeRemaining = block.timestamp + DURATION;
+    function getCurrentPrice() public view returns (uint256) {
+        uint256 elapsed = block.timestamp - currentRoundStart;
+        if (elapsed >= DURATION) {
+            return RESERVE_PRICE;
+        }
 
-        emit Bid(msg.sender, msg.value, potBalance, block.timestamp);
-        emit TimerReset(timeRemaining);
+        uint256 totalDrop = START_PRICE - RESERVE_PRICE;
+        // Calculate drop: (totalDrop * elapsed) / DURATION
+        uint256 currentDrop = (totalDrop * elapsed) / DURATION;
+
+        return START_PRICE - currentDrop;
     }
 
-    function claim() external override {
-        if (block.timestamp < timeRemaining) revert GameActive();
-        if (!gameActive) revert GameNotActive();
+    // --- User Actions ---
 
-        uint256 amount = potBalance;
-        address winner = currentLeader;
+    function buy() external payable nonReentrant {
+        uint256 price = getCurrentPrice();
+        
+        if (msg.value < price) {
+            revert InsufficientPayment(price, msg.value);
+        }
 
-        // Update state before external calls (Checks-Effects-Interactions)
-        gameActive = false;
-        potBalance = 0;
-        currentLeader = address(0);
+        // 1. Calculate Refund (if any)
+        uint256 refund = msg.value - price;
 
-        // Record winner in Ephemeral Hall of Fame
-        _recordWinner(winner, amount);
+        // 2. Effects: Reset for Next Round
+        // Capture state for event before updating
+        uint256 wonRoundId = roundId;
+        
+        roundId++;
+        currentRoundStart = block.timestamp;
 
-        (bool success, ) = winner.call{value: amount}("");
-        if (!success) revert TransferFailed();
+        // 3. Emit Win Event
+        emit RoundWon(wonRoundId, msg.sender, price, block.timestamp);
 
-        emit PotClaimed(winner, amount, block.timestamp);
-    }
+        // 4. Interactions: Payouts
+        
+        // Send payment to Owner (Treasury)
+        (bool successOwner, ) = owner().call{value: price}("");
+        if (!successOwner) revert TransferFailed();
 
-    function bump() external override {
-        // Gasless interaction to keep the chain alive or just check status
-        // This function satisfies the "Bump" requirement for the Gasless Grant
-        // It can be called by a Paymaster to ensure the contract state is fresh
-        // or to trigger specific time-based logic if we add it later.
-        if (block.timestamp >= timeRemaining && gameActive) {
-            // In a future version, this could auto-claim or reset
+        // Send refund to Winner (if applicable)
+        if (refund > 0) {
+            (bool successRefund, ) = msg.sender.call{value: refund}("");
+            if (!successRefund) revert TransferFailed();
         }
     }
 }
